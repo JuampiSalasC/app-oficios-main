@@ -7,6 +7,9 @@ import {
   signInWithPopup,
   GoogleAuthProvider,
   FacebookAuthProvider,
+  PhoneAuthProvider,
+  RecaptchaVerifier,
+  linkWithCredential,
 } from "firebase/auth";
 import { auth } from "../../firebase";
 import config from "../../config";
@@ -34,6 +37,10 @@ const Register = (): JSX.Element => {
   const [subcategoriasDisponibles, setSubcategoriasDisponibles] = useState<{ nombre: string, orden: number }[]>([]);
   const [zonasDisponibles, setZonasDisponibles] = useState<string[]>([]);
   const [error, setError] = useState("");
+  const [telefono, setTelefono] = useState("");
+  const [phoneStep, setPhoneStep] = useState<"idle" | "sending" | "waitingCode" | "verified">("idle");
+  const [smsCode, setSmsCode] = useState("");
+  const [verificationId, setVerificationId] = useState<string | null>(null);
   const [foto, setFoto] = useState<File | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [descripcion, setDescripcion] = useState<string>("");
@@ -91,14 +98,51 @@ const Register = (): JSX.Element => {
     }
   };
 
+  const enviarCodigoSMS = async () => {
+    if (!telefono) { setError("Ingresá tu número de teléfono"); return; }
+    if (!/^\+\d{7,15}$/.test(telefono.replace(/\s/g, ""))) {
+      setError("El número debe incluir el código de país. Ej: +5491162192097");
+      return;
+    }
+    setPhoneStep("sending");
+    setError("");
+    try {
+      const recaptcha = new RecaptchaVerifier(auth, "recaptcha-anchor", { size: "invisible" });
+      const provider = new PhoneAuthProvider(auth);
+      const vid = await provider.verifyPhoneNumber(telefono, recaptcha);
+      setVerificationId(vid);
+      setPhoneStep("waitingCode");
+    } catch (err: any) {
+      setError(err.message);
+      setPhoneStep("idle");
+    }
+  };
+
+  const confirmarCodigoSMS = () => {
+    if (!smsCode || smsCode.length < 6) { setError(t("codigo_verificacion") + " inválido"); return; }
+    setError("");
+    setPhoneStep("verified");
+  };
+
   const handleRegistro = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
+
+    if (phoneStep !== "verified") {
+      setError(t("verificar_telefono"));
+      return;
+    }
 
     try {
       const cred = await createUserWithEmailAndPassword(auth, email, password);
       const user = cred.user;
       setUsuario?.(user);
+
+      if (verificationId && smsCode) {
+        const phoneCredential = PhoneAuthProvider.credential(verificationId, smsCode);
+        await linkWithCredential(user, phoneCredential);
+      }
+
       const token = await user.getIdToken();
 
       // ⬆️ Subir foto si hay
@@ -114,6 +158,7 @@ const Register = (): JSX.Element => {
         foto: fotoPerfil,
         descripcion,
         disponibilidad,
+        telefono,
       };
 
       if (tipo === "profesional") {
@@ -244,6 +289,59 @@ const Register = (): JSX.Element => {
                     className="border-0 px-3 py-3 placeholder-blueGray-300 text-blueGray-600 bg-white rounded text-sm shadow focus:outline-none focus:ring w-full ease-linear transition-all duration-150"
                     placeholder={t("email")}
                   />
+                </div>
+
+                {/* Teléfono + verificación SMS */}
+                <div className="relative w-full mb-3">
+                  <label htmlFor="telefono" className="block uppercase text-blueGray-600 text-xs font-bold mb-2">
+                    {t("telefono")} *
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      id="telefono"
+                      type="tel"
+                      value={telefono}
+                      onChange={(e) => { setTelefono(e.target.value); setPhoneStep("idle"); }}
+                      disabled={phoneStep === "verified"}
+                      className="border-0 px-3 py-3 placeholder-blueGray-300 text-blueGray-600 bg-white rounded text-sm shadow focus:outline-none focus:ring flex-1 ease-linear transition-all duration-150"
+                      placeholder="Ej: +5491162192097"
+                      required
+                    />
+                    {phoneStep !== "verified" && (
+                      <button
+                        type="button"
+                        onClick={enviarCodigoSMS}
+                        disabled={phoneStep === "sending" || phoneStep === "waitingCode"}
+                        className="bg-blueGray-600 text-white text-xs font-bold px-3 py-2 rounded shadow hover:shadow-md disabled:opacity-50 whitespace-nowrap"
+                      >
+                        {phoneStep === "sending" ? "..." : t("verificar_telefono")}
+                      </button>
+                    )}
+                    {phoneStep === "verified" && (
+                      <span className="flex items-center text-green-600 font-bold text-sm px-2">✓ {t("telefono_verificado")}</span>
+                    )}
+                  </div>
+                  <div id="recaptcha-anchor" />
+
+                  {phoneStep === "waitingCode" && (
+                    <div className="mt-2 flex gap-2">
+                      <input
+                        type="text"
+                        value={smsCode}
+                        onChange={(e) => setSmsCode(e.target.value)}
+                        maxLength={6}
+                        className="border-0 px-3 py-3 placeholder-blueGray-300 text-blueGray-600 bg-white rounded text-sm shadow focus:outline-none focus:ring flex-1"
+                        placeholder={t("codigo_verificacion")}
+                      />
+                      <button
+                        type="button"
+                        onClick={confirmarCodigoSMS}
+                        className="bg-green-600 text-white text-xs font-bold px-3 py-2 rounded shadow hover:shadow-md"
+                      >
+                        {t("confirmar_codigo")}
+                      </button>
+                    </div>
+                  )}
                 </div>
 
                 <div className="relative w-full mb-3">
